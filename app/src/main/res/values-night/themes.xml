@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Base application theme (Dark) -->
-    <style name="Theme.SnapFetch" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/primary</item>
-        <item name="colorOnPrimary">@color/on_primary</item>
+    <style name="Theme.SnapFetch" parent="android:Theme.Material.NoActionBar">
         <item name="android:statusBarColor">@color/background_dark</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:navigationBarColor">@color/background_dark</item>
     </style>
 
     <!-- Translucent Overlay Theme for Share Intent target (Dark) -->
-    <style name="Theme.SnapFetch.TransparentOverlay" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.SnapFetch.TransparentOverlay" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:colorBackgroundCacheHint">@null</item>
         <item name="android:windowIsTranslucent">true</item>
