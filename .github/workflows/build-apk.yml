@@ -1,0 +1,58 @@
+name: Build SnapFetch Debug APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk SnapFetch-v1.0.0.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SnapFetch-APK
+          path: SnapFetch-v1.0.0.apk
+          retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/heads/main')
+        with:
+          tag_name: v1.0.0
+          name: SnapFetch v1.0.0 (Debug APK)
+          body: |
+            ## SnapFetch v1.0.0
+            - APK nativa para Android compilada automáticamente lista para instalar y probar.
+            - Compatible con Android 8.0 (API 26) hasta Android 14+ (API 34).
+            - Overlay translúcido de Share Intent para TikTok, Instagram, YouTube Shorts y X.
+          files: SnapFetch-v1.0.0.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
