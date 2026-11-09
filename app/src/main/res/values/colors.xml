@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sahara Warm Minimalism Color Palette -->
+    <color name="primary">#C2652A</color>
+    <color name="primary_container">#E08850</color>
+    <color name="primary_fixed">#FBE8D8</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="on_primary_fixed">#401A08</color>
+
+    <color name="background_light">#FAF5EE</color>
+    <color name="surface_light">#FAF5EE</color>
+    <color name="surface_container_light">#F2ECE4</color>
+    <color name="surface_container_high_light">#ECE6DC</color>
+    <color name="on_surface_light">#3A302A</color>
+    <color name="on_surface_variant_light">#605850</color>
+
+    <color name="background_dark">#171311</color>
+    <color name="surface_dark">#1F1916</color>
+    <color name="surface_container_dark">#26201C</color>
+    <color name="surface_container_high_dark">#2F2722</color>
+    <color name="on_surface_dark">#F2ECE4</color>
+    <color name="on_surface_variant_dark">#CEC6BE</color>
+
+    <color name="outline_variant">#D8D0C8</color>
+    <color name="tertiary">#8C3C3C</color>
+    <color name="scrim_dark">#992A221C</color>
+    <color name="transparent">#00000000</color>
+</resources>

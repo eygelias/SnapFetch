@@ -1,0 +1,33 @@
+<resources>
+    <string name="app_name">SnapFetch</string>
+    <string name="overlay_title">SnapFetch Overlay</string>
+    <string name="overlay_subtitle">Extensión en segundo plano • Sin salir de la app</string>
+    <string name="badge_link_detected">ENLACE DETECTADO</string>
+    <string name="close_overlay">Cerrar superposición</string>
+    <string name="quick_status_default">FHD 1080p sin marca • ~42 MB</string>
+    <string name="button_preferences">Preferencias</string>
+    <string name="btn_download_mp4">⚡ DESCARGAR MP4</string>
+    <string name="btn_download_mp4_subtitle">Modo Rápido predeterminado • 1080p sin marca</string>
+    <string name="preferences_title">MODO PREDETERMINADO DE DESCARGA</string>
+    <string name="preferences_subtitle">Ajustes</string>
+    <string name="mode_fast_title">⚡ Modo Rápido (1-Clic)</string>
+    <string name="mode_fast_badge">PREDETERMINADO</string>
+    <string name="mode_fast_desc">Descarga directa en MP4 1080p sin preguntas</string>
+    <string name="mode_advanced_title">⚙️ Modo Avanzado / Personalizado</string>
+    <string name="mode_advanced_desc">Preguntar siempre calidad (4K, 1080p, MP3) antes de guardar</string>
+    <string name="checkbox_remember">Recordar esta preferencia para todas las descargas</string>
+    <string name="footer_session">Protección de sesión activa</string>
+    <string name="footer_version">Android Share Intent • v2.4</string>
+
+    <!-- Notification Strings -->
+    <string name="notif_channel_name">SnapFetch Descargas</string>
+    <string name="notif_channel_desc">Notificaciones de progreso para descargas de video en segundo plano</string>
+    <string name="notif_downloading_title">⬇️ Descargando video en segundo plano...</string>
+    <string name="notif_downloading_subtext">Sin salir de tu red social • Guardando en /Movies/SnapFetch</string>
+    <string name="notif_download_complete">Descarga completada</string>
+    <string name="notif_download_failed">Error en la descarga</string>
+    <string name="notif_action_cancel">Cancelar</string>
+    <string name="notif_action_pause">Pausar</string>
+    <string name="notif_action_resume">Reanudar</string>
+    <string name="notif_action_open">Abrir video</string>
+</resources>
