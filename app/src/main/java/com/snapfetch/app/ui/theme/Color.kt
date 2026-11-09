@@ -25,6 +25,7 @@ val OutlineVariantWarm = Color(0xFFD8D0C8)
 val TertiaryRose = Color(0xFF8C3C3C)
 
 // Dark Sahara Palette (Warm night undertones, never cold black)
+val PrimaryContainerDark = Color(0xFF8A4518)
 val BackgroundDarkEspresso = Color(0xFF171311)
 val SurfaceDarkEspresso = Color(0xFF1F1916)
 val SurfaceContainerLowestDark = Color(0xFF120E0C)
