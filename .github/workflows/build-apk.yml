@@ -21,9 +21,7 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+          cache: 'gradle'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -31,7 +29,7 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Rename APK
+      - name: Prepare APK Output
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk SnapFetch-v1.0.0.apk
 
@@ -50,7 +48,7 @@ jobs:
           name: SnapFetch v1.0.0 (Debug APK)
           body: |
             ## SnapFetch v1.0.0
-            - APK nativa para Android compilada automáticamente lista para instalar y probar.
+            - APK nativa para Android lista para instalar y probar.
             - Compatible con Android 8.0 (API 26) hasta Android 14+ (API 34).
             - Overlay translúcido de Share Intent para TikTok, Instagram, YouTube Shorts y X.
           files: SnapFetch-v1.0.0.apk
