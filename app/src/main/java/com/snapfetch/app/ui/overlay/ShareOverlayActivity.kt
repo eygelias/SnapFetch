@@ -139,7 +139,6 @@ fun ShareOverlayRoot(
                 onToggleRemember = { viewModel.toggleRememberPreference(it) },
                 onDismiss = onDismiss,
                 onDownloadTriggered = { metadata, quality ->
-                    val context = androidx.compose.ui.platform.AndroidUiDispatcher.Main
                     viewModel.startDownload(
                         context = com.snapfetch.app.SnapFetchApplication.instance,
                         metadata = metadata,
