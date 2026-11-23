@@ -1,11 +1,16 @@
 package com.snapfetch.app.ui.overlay
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -32,8 +37,29 @@ class ShareOverlayActivity : ComponentActivity() {
 
     private val viewModel: OverlayViewModel by viewModels { OverlayViewModel.Factory }
 
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (!isGranted) {
+                Toast.makeText(
+                    this,
+                    "⚠️ Activa las notificaciones en ajustes para ver la barra de progreso",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ensure notification channels are initialized
+        com.snapfetch.app.data.worker.DownloadNotificationManager.createNotificationChannels(this)
+
+        // Request runtime permission for notifications on Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         // Handle the incoming shared text intent
         handleIntent(intent)
@@ -44,6 +70,11 @@ class ShareOverlayActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onDismiss = { finishWithSlide() },
                     onDownloadStarted = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
                         Toast.makeText(
                             applicationContext,
                             "⚡ Descarga iniciada en segundo plano",

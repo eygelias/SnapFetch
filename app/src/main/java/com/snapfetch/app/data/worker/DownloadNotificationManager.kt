@@ -17,8 +17,8 @@ import com.snapfetch.app.ui.main.MainActivity
 
 object DownloadNotificationManager {
 
-    const val CHANNEL_ID = "snapfetch_downloads_channel"
-    const val CHANNEL_COMPLETED_ID = "snapfetch_completed_channel"
+    const val CHANNEL_ID = "snapfetch_downloads_channel_v4"
+    const val CHANNEL_COMPLETED_ID = "snapfetch_completed_channel_v4"
     const val NOTIFICATION_ID_BASE = 4001
 
     fun createNotificationChannels(context: Context) {
@@ -26,16 +26,24 @@ object DownloadNotificationManager {
             val notificationManager: NotificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // 1. Progress channel: Visible progress bar in notification drawer without buzzing on every %
+            // Delete legacy low-importance channels if any
+            try {
+                notificationManager.deleteNotificationChannel("snapfetch_downloads_channel")
+                notificationManager.deleteNotificationChannel("snapfetch_downloads_channel_v2")
+                notificationManager.deleteNotificationChannel("snapfetch_downloads_channel_v3")
+            } catch (_: Exception) {}
+
+            // 1. Progress channel: Prominent in notification shade alongside messages (IMPORTANCE_DEFAULT)
             val progressChannel = NotificationChannel(
                 CHANNEL_ID,
                 "SnapFetch Descargas en Progreso",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Barra de progreso de descargas de video en segundo plano"
-                setShowBadge(false)
-                setSound(null, null)
+                description = "Muestra la barra de progreso activa en la cortina de notificaciones"
+                setShowBadge(true)
+                setSound(null, null) // Silent updates so it does not chime on every percent
                 enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(progressChannel)
 
@@ -54,6 +62,7 @@ object DownloadNotificationManager {
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .build()
                 setSound(soundUri, audioAttributes)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(completedChannel)
         }
@@ -117,8 +126,9 @@ object DownloadNotificationManager {
             .setOnlyAlertOnce(true)
             .setContentIntent(openPendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
         // Show immediately on Android 12+ without the default 10-second system delay
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
