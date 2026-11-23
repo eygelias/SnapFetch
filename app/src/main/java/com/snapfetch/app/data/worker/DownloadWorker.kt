@@ -206,19 +206,17 @@ class DownloadWorker(
             )
             Result.failure()
         } finally {
+            if (isStopped) {
+                DownloadNotificationManager.dismissProgressNotification(context, notificationId)
+                try {
+                    YoutubeDL.getInstance().destroyProcessById(id.toString())
+                } catch (_: Exception) {}
+            }
             try {
                 outputStream?.flush()
                 outputStream?.close()
             } catch (_: Exception) {}
         }
-    }
-
-    override fun onStopped() {
-        super.onStopped()
-        try {
-            DownloadNotificationManager.dismissProgressNotification(context, notificationId)
-            YoutubeDL.getInstance().destroyProcessById(id.toString())
-        } catch (_: Exception) {}
     }
 
     private fun isDirectMediaUrl(url: String): Boolean {
