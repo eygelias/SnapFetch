@@ -70,6 +70,9 @@ class ShareOverlayActivity : ComponentActivity() {
         if (Intent.ACTION_SEND == action && type != null) {
             if ("text/plain" == type || type.startsWith("text/")) {
                 val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?: intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                    ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+                android.util.Log.d("ShareOverlay", "Received shared text: $sharedText")
                 viewModel.processSharedContent(sharedText)
             }
         }

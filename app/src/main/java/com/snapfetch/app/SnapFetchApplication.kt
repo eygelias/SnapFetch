@@ -6,6 +6,10 @@ import com.snapfetch.app.data.repository.VideoExtractorRepositoryImpl
 import com.snapfetch.app.data.worker.DownloadNotificationManager
 import com.snapfetch.app.domain.repository.PreferencesRepository
 import com.snapfetch.app.domain.repository.VideoExtractorRepository
+import com.snapfetch.app.utils.YoutubeDLHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * SnapFetchApplication: Initializes application-wide services,
@@ -28,7 +32,12 @@ class SnapFetchApplication : Application() {
 
         // Initialize Repositories
         preferencesRepository = PreferencesRepositoryImpl(this)
-        videoExtractorRepository = VideoExtractorRepositoryImpl()
+        videoExtractorRepository = VideoExtractorRepositoryImpl(this)
+
+        // Asynchronously initialize local YoutubeDL engine
+        CoroutineScope(Dispatchers.IO).launch {
+            YoutubeDLHelper.init(this@SnapFetchApplication)
+        }
     }
 
     companion object {

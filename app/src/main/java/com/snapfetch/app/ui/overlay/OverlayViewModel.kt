@@ -105,15 +105,15 @@ class OverlayViewModel(
      * Uses audio URL when quality is audio-only, otherwise video stream URL.
      */
     fun startDownload(context: Context, metadata: VideoMetadata, quality: DownloadQuality) {
-        // Pick the right URL: audio track or video stream
+        // Pick the right URL: audio track or video stream, fallback to originalUrl
         val downloadUrl = if (quality.isAudioOnly && !metadata.directAudioUrl.isNullOrBlank()) {
             metadata.directAudioUrl
         } else {
-            metadata.directStreamUrl
+            metadata.directStreamUrl.ifBlank { metadata.originalUrl }
         }
 
         if (downloadUrl.isBlank()) {
-            // Should not happen if extraction succeeded, but guard anyway
+            android.util.Log.e("OverlayVM", "startDownload aborted: empty downloadUrl")
             return
         }
 

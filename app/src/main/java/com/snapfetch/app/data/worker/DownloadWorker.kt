@@ -11,10 +11,14 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.snapfetch.app.domain.model.DownloadQuality
 import com.snapfetch.app.utils.StorageHelper
+import com.snapfetch.app.utils.YoutubeDLHelper
+import com.yausername.youtubedl.YoutubeDL
+import com.yausername.youtubedl.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.TimeUnit
@@ -52,19 +56,18 @@ class DownloadWorker(
         val quality = DownloadQuality.fromId(qualityId)
         val isAudio = quality.isAudioOnly
 
-        // ── Validate URL ────────────────────────────────────────────
         if (streamUrl.isNullOrBlank()) {
-            Log.e(TAG, "No stream URL provided")
+            Log.e(TAG, "No URL provided")
             DownloadNotificationManager.showFailureNotification(
                 context, notificationId,
-                "No se pudo obtener la URL de descarga del video. Intenta de nuevo."
+                "No se pudo obtener el enlace de descarga. Intenta de nuevo."
             )
             return@withContext Result.failure()
         }
 
-        Log.d(TAG, "Starting download: $streamUrl")
+        Log.d(TAG, "Starting download for: $streamUrl (isAudio=$isAudio)")
 
-        // ── Start foreground service with initial notification ───────
+        // 1. Start foreground service with initial notification
         val initialNotification = DownloadNotificationManager.buildProgressNotification(
             context = context,
             notificationId = notificationId,
@@ -90,7 +93,7 @@ class DownloadWorker(
         }
         setForeground(foregroundInfo)
 
-        // ── Prepare file name & MediaStore target ───────────────────
+        // 2. Prepare file name & MediaStore target
         val sanitizedTitle = title.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_").take(50).trim()
         val fileExtension = if (isAudio) "mp3" else "mp4"
         val mimeType = if (isAudio) "audio/mpeg" else "video/mp4"
@@ -115,20 +118,28 @@ class DownloadWorker(
             outputStream = StorageHelper.openOutputStream(context, mediaUri)
                 ?: throw IllegalStateException("No se pudo abrir el stream de salida")
 
-            // ── Execute real HTTP download ──────────────────────────
-            val downloadSuccess = downloadHttpStream(
-                url = streamUrl,
-                outputStream = outputStream,
-                title = title,
-                platform = platform
-            )
+            // Ensure YoutubeDL engine is ready
+            YoutubeDLHelper.init(context)
 
-            if (!downloadSuccess || isStopped) {
+            var success = false
+
+            // Try local yt-dlp first
+            if (YoutubeDLHelper.isReady()) {
+                success = downloadWithYoutubeDL(streamUrl, outputStream, title, platform, isAudio, fileExtension)
+            }
+
+            // Fallback to direct HTTP stream if YoutubeDL did not complete or URL is direct
+            if (!success && !isStopped) {
+                Log.w(TAG, "YoutubeDL did not succeed, trying direct HTTP stream...")
+                success = downloadHttpStream(streamUrl, outputStream, title, platform)
+            }
+
+            if (!success || isStopped) {
                 StorageHelper.deletePendingEntry(context, mediaUri)
                 if (!isStopped) {
                     DownloadNotificationManager.showFailureNotification(
                         context, notificationId,
-                        "La descarga falló. El servidor no respondió correctamente."
+                        "No se pudo descargar el video. Verifica tu conexión o el enlace."
                     )
                 }
                 return@withContext Result.failure()
@@ -136,10 +147,9 @@ class DownloadWorker(
 
             // Finalize MediaStore entry (marks IS_PENDING = 0)
             StorageHelper.finalizeMediaStoreEntry(context, mediaUri)
-
             Log.d(TAG, "✅ Download complete: $fileName → $mediaUri")
 
-            // Trigger completion notification
+            // Completion notification
             DownloadNotificationManager.showCompletionNotification(
                 context = context,
                 notificationId = notificationId,
@@ -161,81 +171,121 @@ class DownloadWorker(
             try {
                 outputStream?.flush()
                 outputStream?.close()
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
         }
     }
 
-    /**
-     * Downloads the binary stream from [url] and writes it to [outputStream],
-     * updating the foreground notification with real progress.
-     */
+    private suspend fun downloadWithYoutubeDL(
+        url: String,
+        outputStream: OutputStream,
+        title: String,
+        platform: String,
+        isAudio: Boolean,
+        fileExtension: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val cacheDir = context.externalCacheDir ?: context.cacheDir
+        val tempFile = File(cacheDir, "sf_dl_${id}_${System.currentTimeMillis()}.$fileExtension")
+
+        try {
+            val request = YoutubeDLRequest(url).apply {
+                addOption("-o", tempFile.absolutePath)
+                addOption("--no-mtime")
+                if (isAudio) {
+                    addOption("-x")
+                    addOption("--audio-format", "mp3")
+                } else {
+                    addOption("-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
+                    addOption("--merge-output-format", "mp4")
+                }
+            }
+
+            Log.d(TAG, "Executing YoutubeDL for $url -> ${tempFile.absolutePath}")
+
+            var lastReported = -1
+            YoutubeDL.getInstance().execute(request) { progress, etaInSeconds, line ->
+                if (isStopped) {
+                    YoutubeDL.getInstance().destroyProcessById(id.toString())
+                    return@execute
+                }
+                val p = progress.toInt().coerceIn(0, 100)
+                if (p != lastReported) {
+                    lastReported = p
+                    Log.v(TAG, "Download progress: $p% (ETA ${etaInSeconds}s)")
+                }
+            }
+
+            // Also search for actual file if extension got changed during merge
+            val actualFile = if (tempFile.exists()) {
+                tempFile
+            } else {
+                val prefix = "sf_dl_${id}_"
+                cacheDir.listFiles { _, name -> name.startsWith(prefix) }?.firstOrNull()
+            }
+
+            if (actualFile == null || !actualFile.exists() || actualFile.length() < 1024) {
+                Log.w(TAG, "YoutubeDL output file missing or empty")
+                return@withContext false
+            }
+
+            Log.d(TAG, "Copying ${actualFile.length()} bytes to MediaStore outputStream...")
+            actualFile.inputStream().use { input ->
+                input.copyTo(outputStream)
+            }
+            actualFile.delete()
+            return@withContext true
+        } catch (e: Exception) {
+            Log.e(TAG, "YoutubeDL execution error", e)
+            tempFile.delete()
+            return@withContext false
+        }
+    }
+
     private suspend fun downloadHttpStream(
         url: String,
         outputStream: OutputStream,
         title: String,
         platform: String
     ): Boolean {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko)")
-            .header("Accept", "*/*")
-            .header("Accept-Encoding", "identity")  // avoid gzip for progress tracking
-            .build()
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko)")
+                .header("Accept", "*/*")
+                .header("Accept-Encoding", "identity")
+                .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                Log.e(TAG, "HTTP download failed: ${response.code} ${response.message}")
-                return false
-            }
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return false
+                val body = response.body ?: return false
+                val totalBytes = body.contentLength()
+                val inputStream: InputStream = body.byteStream()
 
-            val body = response.body ?: return false
-            val totalBytes = body.contentLength()
-            val inputStream: InputStream = body.byteStream()
+                val buffer = ByteArray(16 * 1024)
+                var bytesCopied: Long = 0
+                var lastProgress = -1
 
-            Log.d(TAG, "Downloading: totalBytes=$totalBytes")
+                var bytes = inputStream.read(buffer)
+                while (bytes >= 0) {
+                    if (isStopped) return false
 
-            val buffer = ByteArray(16 * 1024)
-            var bytesCopied: Long = 0
-            var lastProgress = -1
+                    outputStream.write(buffer, 0, bytes)
+                    bytesCopied += bytes
 
-            var bytes = inputStream.read(buffer)
-            while (bytes >= 0) {
-                if (isStopped) {
-                    Log.d(TAG, "Download cancelled by user")
-                    return false
+                    if (totalBytes > 0) {
+                        val progress = ((bytesCopied * 100) / totalBytes).toInt().coerceAtMost(100)
+                        if (progress != lastProgress && (progress - lastProgress >= 2 || progress == 100)) {
+                            lastProgress = progress
+                            updateForegroundProgress(progress, title, platform)
+                        }
+                    }
+                    bytes = inputStream.read(buffer)
                 }
 
-                outputStream.write(buffer, 0, bytes)
-                bytesCopied += bytes
-
-                if (totalBytes > 0) {
-                    val progress = ((bytesCopied * 100) / totalBytes).toInt().coerceAtMost(100)
-                    if (progress != lastProgress && (progress - lastProgress >= 2 || progress == 100)) {
-                        lastProgress = progress
-                        updateForegroundProgress(progress, title, platform)
-                    }
-                } else {
-                    // Unknown total – update every ~256 KB
-                    val mbDownloaded = bytesCopied / (256 * 1024)
-                    if (mbDownloaded > lastProgress) {
-                        lastProgress = mbDownloaded.toInt()
-                        updateForegroundProgress(-1, title, platform) // indeterminate
-                    }
-                }
-
-                bytes = inputStream.read(buffer)
+                bytesCopied >= 1024
             }
-
-            Log.d(TAG, "Stream finished: $bytesCopied bytes written")
-
-            // Verify we got actual data
-            if (bytesCopied < 1024) {
-                Log.e(TAG, "Downloaded file too small ($bytesCopied bytes) – likely not a valid video")
-                return false
-            }
-
-            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "HTTP stream fallback error", e)
+            false
         }
     }
 
