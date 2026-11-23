@@ -16,7 +16,9 @@ import com.snapfetch.app.utils.StorageHelper
 import com.snapfetch.app.utils.YoutubeDLHelper
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -169,6 +171,7 @@ class DownloadWorker(
 
             if (!success || isStopped) {
                 StorageHelper.deletePendingEntry(context, mediaUri)
+                DownloadNotificationManager.dismissProgressNotification(context, notificationId)
                 if (!isStopped) {
                     DownloadNotificationManager.showFailureNotification(
                         context, notificationId,
@@ -182,7 +185,8 @@ class DownloadWorker(
             StorageHelper.finalizeMediaStoreEntry(context, mediaUri)
             Log.d(TAG, "✅ Download successfully finalized: $fileName → $mediaUri")
 
-            // 4. Show high-priority completion notification (with sound, vibration, heads-up)
+            // 4. Dismiss progress notification and show high-priority completion notification
+            DownloadNotificationManager.dismissProgressNotification(context, notificationId)
             DownloadNotificationManager.showCompletionNotification(
                 context = context,
                 notificationId = notificationId,
@@ -195,6 +199,7 @@ class DownloadWorker(
         } catch (e: Exception) {
             Log.e(TAG, "Download error", e)
             StorageHelper.deletePendingEntry(context, mediaUri)
+            DownloadNotificationManager.dismissProgressNotification(context, notificationId)
             DownloadNotificationManager.showFailureNotification(
                 context, notificationId,
                 e.localizedMessage ?: "Error inesperado durante la descarga"
@@ -206,6 +211,14 @@ class DownloadWorker(
                 outputStream?.close()
             } catch (_: Exception) {}
         }
+    }
+
+    override fun onStopped() {
+        super.onStopped()
+        try {
+            DownloadNotificationManager.dismissProgressNotification(context, notificationId)
+            YoutubeDL.getInstance().destroyProcessById(id.toString())
+        } catch (_: Exception) {}
     }
 
     private fun isDirectMediaUrl(url: String): Boolean {
@@ -243,7 +256,19 @@ class DownloadWorker(
 
             Log.d(TAG, "Executing YoutubeDL for $url -> ${tempFile.absolutePath}")
 
+            // Emit initial progress
+            updateForegroundProgress(
+                progress = 0,
+                bytesDownloaded = 0L,
+                totalBytes = 0L,
+                title = title,
+                platform = platform
+            )
+
             var lastReported = -1
+            var lastUpdateMs = 0L
+            val coroutineScope = CoroutineScope(Dispatchers.IO)
+
             val callback: (Float, Long, String?) -> Unit = { progress, etaInSeconds, _ ->
                 if (isStopped) {
                     try {
@@ -251,9 +276,22 @@ class DownloadWorker(
                     } catch (_: Exception) {}
                 } else {
                     val p = progress.toInt().coerceIn(0, 100)
-                    if (p != lastReported) {
+                    val now = System.currentTimeMillis()
+                    if ((p != lastReported && (p - lastReported >= 2 || p == 100)) && (now - lastUpdateMs >= 300 || p == 100)) {
                         lastReported = p
+                        lastUpdateMs = now
                         Log.v(TAG, "yt-dlp progress: $p% (ETA ${etaInSeconds}s)")
+                        coroutineScope.launch {
+                            try {
+                                updateForegroundProgress(
+                                    progress = p,
+                                    bytesDownloaded = 0L,
+                                    totalBytes = 0L,
+                                    title = title,
+                                    platform = platform
+                                )
+                            } catch (_: Exception) {}
+                        }
                     }
                 }
             }
@@ -325,6 +363,16 @@ class DownloadWorker(
                 val buffer = ByteArray(32 * 1024)
                 var bytesCopied: Long = 0
                 var lastProgress = -1
+                var lastTimeUpdated = System.currentTimeMillis()
+
+                // Emit initial progress immediately
+                updateForegroundProgress(
+                    progress = if (totalBytes > 0) 0 else -1,
+                    bytesDownloaded = 0L,
+                    totalBytes = if (totalBytes > 0) totalBytes else 0L,
+                    title = title,
+                    platform = platform
+                )
 
                 var bytes = inputStream.read(buffer)
                 while (bytes >= 0) {
@@ -333,11 +381,31 @@ class DownloadWorker(
                     outputStream.write(buffer, 0, bytes)
                     bytesCopied += bytes
 
+                    val now = System.currentTimeMillis()
                     if (totalBytes > 0) {
-                        val progress = ((bytesCopied * 100) / totalBytes).toInt().coerceAtMost(100)
-                        if (progress != lastProgress && (progress - lastProgress >= 3 || progress == 100)) {
+                        val progress = ((bytesCopied * 100) / totalBytes).toInt().coerceIn(0, 100)
+                        if ((progress != lastProgress && (progress - lastProgress >= 2 || progress == 100)) || (now - lastTimeUpdated >= 350)) {
                             lastProgress = progress
-                            updateForegroundProgress(progress, title, platform)
+                            lastTimeUpdated = now
+                            updateForegroundProgress(
+                                progress = progress,
+                                bytesDownloaded = bytesCopied,
+                                totalBytes = totalBytes,
+                                title = title,
+                                platform = platform
+                            )
+                        }
+                    } else {
+                        // Chunked or unknown length: update every 350ms
+                        if (now - lastTimeUpdated >= 350) {
+                            lastTimeUpdated = now
+                            updateForegroundProgress(
+                                progress = -1,
+                                bytesDownloaded = bytesCopied,
+                                totalBytes = 0L,
+                                title = title,
+                                platform = platform
+                            )
                         }
                     }
                     bytes = inputStream.read(buffer)
@@ -360,36 +428,44 @@ class DownloadWorker(
 
     private suspend fun updateForegroundProgress(
         progress: Int,
+        bytesDownloaded: Long = 0L,
+        totalBytes: Long = 0L,
         title: String,
         platform: String
     ) {
         val isIndeterminate = progress < 0
-        val displayProgress = if (isIndeterminate) 0 else progress
+        val displayProgress = if (isIndeterminate) 0 else progress.coerceIn(0, 100)
 
-        setProgress(workDataOf(KEY_PROGRESS to displayProgress))
+        try {
+            setProgress(workDataOf(KEY_PROGRESS to displayProgress))
 
-        val notification = DownloadNotificationManager.buildProgressNotification(
-            context = context,
-            notificationId = notificationId,
-            workId = id.toString(),
-            title = title,
-            platformName = platform,
-            progressPercent = displayProgress,
-            isIndeterminate = isIndeterminate
-        )
-        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(
-                notificationId,
-                notification,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                } else {
-                    0
-                }
+            val notification = DownloadNotificationManager.buildProgressNotification(
+                context = context,
+                notificationId = notificationId,
+                workId = id.toString(),
+                title = title,
+                platformName = platform,
+                progressPercent = displayProgress,
+                bytesDownloaded = bytesDownloaded,
+                totalBytes = totalBytes,
+                isIndeterminate = isIndeterminate
             )
-        } else {
-            ForegroundInfo(notificationId, notification)
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ForegroundInfo(
+                    notificationId,
+                    notification,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    } else {
+                        0
+                    }
+                )
+            } else {
+                ForegroundInfo(notificationId, notification)
+            }
+            setForeground(info)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update foreground progress: ${e.message}")
         }
-        setForeground(info)
     }
 }

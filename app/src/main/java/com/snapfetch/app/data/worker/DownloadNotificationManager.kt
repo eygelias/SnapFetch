@@ -26,24 +26,26 @@ object DownloadNotificationManager {
             val notificationManager: NotificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // 1. Silent channel for ongoing progress (low importance, no vibration or sounds per %)
+            // 1. Progress channel: Visible progress bar in notification drawer without buzzing on every %
             val progressChannel = NotificationChannel(
                 CHANNEL_ID,
                 "SnapFetch Descargas en Progreso",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Muestra el progreso de descargas de video en segundo plano"
+                description = "Barra de progreso de descargas de video en segundo plano"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
             }
             notificationManager.createNotificationChannel(progressChannel)
 
-            // 2. High priority channel for completion / error alerts (with sound and heads-up banner)
+            // 2. High priority channel for download completed alerts (with sound and heads-up banner)
             val completedChannel = NotificationChannel(
                 CHANNEL_COMPLETED_ID,
                 "SnapFetch Descargas Finalizadas",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifica cuando un video se termina de descargar con éxito"
+                description = "Avisos emergentes cuando un video se termina de descargar"
                 setShowBadge(true)
                 enableVibration(true)
                 val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -60,6 +62,18 @@ object DownloadNotificationManager {
     // Backward-compatible alias
     fun createNotificationChannel(context: Context) = createNotificationChannels(context)
 
+    fun formatBytes(bytes: Long): String {
+        if (bytes <= 0) return ""
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+        return when {
+            gb >= 1.0 -> String.format(java.util.Locale.US, "%.1f GB", gb)
+            mb >= 1.0 -> String.format(java.util.Locale.US, "%.1f MB", mb)
+            else -> String.format(java.util.Locale.US, "%.0f KB", kb)
+        }
+    }
+
     fun buildProgressNotification(
         context: Context,
         notificationId: Int,
@@ -67,6 +81,8 @@ object DownloadNotificationManager {
         title: String,
         platformName: String,
         progressPercent: Int,
+        bytesDownloaded: Long = 0L,
+        totalBytes: Long = 0L,
         isIndeterminate: Boolean = false
     ): Notification {
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -81,27 +97,44 @@ object DownloadNotificationManager {
 
         val cancelIntent = WorkManager.getInstance(context).createCancelPendingIntent(java.util.UUID.fromString(workId))
 
-        val progressText = if (isIndeterminate) {
-            "Preparando descarga..."
-        } else {
-            "$progressPercent% • Sin salir de $platformName"
+        val progressText = when {
+            isIndeterminate -> if (bytesDownloaded > 0) "Descargando... ${formatBytes(bytesDownloaded)}" else "Preparando descarga..."
+            totalBytes > 0 -> "$progressPercent% • ${formatBytes(bytesDownloaded)} de ${formatBytes(totalBytes)}"
+            bytesDownloaded > 0 -> "$progressPercent% • ${formatBytes(bytesDownloaded)}"
+            else -> "$progressPercent% • Sin salir de $platformName"
         }
 
-        return NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("⬇️ Descargando video en segundo plano...")
+            .setContentTitle("⬇️ Descargando video ($platformName)")
             .setContentText(progressText)
+            .setSubText(if (isIndeterminate) null else "$progressPercent%")
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "⬇️ $title\n$progressPercent% • Sin salir de $platformName • Guardando en /Movies/SnapFetch"
+                "⬇️ $title\n\n$progressText • Guardando en /Movies/SnapFetch"
             ))
-            .setProgress(100, progressPercent, isIndeterminate)
+            .setProgress(100, progressPercent.coerceIn(0, 100), isIndeterminate)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openPendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancelar", cancelIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .build()
+
+        // Show immediately on Android 12+ without the default 10-second system delay
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        return builder.build()
+    }
+
+    /**
+     * Explicitly dismisses the ongoing download progress notification from the status bar.
+     */
+    fun dismissProgressNotification(context: Context, notificationId: Int) {
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(notificationId)
     }
 
     fun showCompletionNotification(
@@ -111,11 +144,13 @@ object DownloadNotificationManager {
         fileUri: Uri,
         mimeType: String
     ) {
+        // First ensure any lingering progress notification is removed
+        dismissProgressNotification(context, notificationId)
+
         val viewIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(fileUri, mimeType)
             flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
         }
-        // Use a distinct notification ID so WorkManager does not cancel it when the worker terminates
         val completionNotificationId = NOTIFICATION_ID_BASE + 5000 + (notificationId % 1000)
 
         val viewPendingIntent = PendingIntent.getActivity(
@@ -145,6 +180,9 @@ object DownloadNotificationManager {
     }
 
     fun showFailureNotification(context: Context, notificationId: Int, errorMessage: String) {
+        // First ensure progress bar is dismissed
+        dismissProgressNotification(context, notificationId)
+
         val failureNotificationId = NOTIFICATION_ID_BASE + 6000 + (notificationId % 1000)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_COMPLETED_ID)
