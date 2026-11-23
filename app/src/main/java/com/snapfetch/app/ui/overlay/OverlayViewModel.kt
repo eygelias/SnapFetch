@@ -102,14 +102,27 @@ class OverlayViewModel(
 
     /**
      * Enqueues the background download task in WorkManager and returns immediately.
+     * Uses audio URL when quality is audio-only, otherwise video stream URL.
      */
     fun startDownload(context: Context, metadata: VideoMetadata, quality: DownloadQuality) {
+        // Pick the right URL: audio track or video stream
+        val downloadUrl = if (quality.isAudioOnly && !metadata.directAudioUrl.isNullOrBlank()) {
+            metadata.directAudioUrl
+        } else {
+            metadata.directStreamUrl
+        }
+
+        if (downloadUrl.isBlank()) {
+            // Should not happen if extraction succeeded, but guard anyway
+            return
+        }
+
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
         val inputData = Data.Builder()
-            .putString(DownloadWorker.KEY_STREAM_URL, metadata.directStreamUrl)
+            .putString(DownloadWorker.KEY_STREAM_URL, downloadUrl)
             .putString(DownloadWorker.KEY_TITLE, metadata.title)
             .putString(DownloadWorker.KEY_AUTHOR, metadata.authorHandle)
             .putString(DownloadWorker.KEY_PLATFORM, metadata.platform.displayName)

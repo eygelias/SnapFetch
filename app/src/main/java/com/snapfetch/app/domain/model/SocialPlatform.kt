@@ -5,10 +5,11 @@ enum class SocialPlatform(
     val shortName: String,
     val domainKeywords: List<String>
 ) {
-    TIKTOK("TikTok", "TikTok", listOf("tiktok.com", "douyin.com")),
+    TIKTOK("TikTok", "TikTok", listOf("tiktok.com", "douyin.com", "vm.tiktok.com")),
     INSTAGRAM("Instagram", "Instagram", listOf("instagram.com", "instagr.am")),
     YOUTUBE("YouTube Shorts", "YouTube", listOf("youtube.com", "youtu.be")),
     TWITTER_X("X (Twitter)", "X", listOf("twitter.com", "x.com")),
+    FACEBOOK("Facebook", "Facebook", listOf("facebook.com", "fb.watch", "fb.com", "m.facebook.com")),
     UNKNOWN("Enlace Web", "Web", emptyList());
 
     companion object {
