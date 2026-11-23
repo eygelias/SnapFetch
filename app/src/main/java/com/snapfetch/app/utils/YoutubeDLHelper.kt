@@ -3,7 +3,7 @@ package com.snapfetch.app.utils
 import android.content.Context
 import android.util.Log
 import com.yausername.ffmpeg.FFmpeg
-import com.yausername.youtubedl.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDL
 
 object YoutubeDLHelper {
     private const val TAG = "YoutubeDLHelper"

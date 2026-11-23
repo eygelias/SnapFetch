@@ -12,8 +12,8 @@ import androidx.work.workDataOf
 import com.snapfetch.app.domain.model.DownloadQuality
 import com.snapfetch.app.utils.StorageHelper
 import com.snapfetch.app.utils.YoutubeDLHelper
-import com.yausername.youtubedl.YoutubeDL
-import com.yausername.youtubedl.YoutubeDLRequest
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -202,17 +202,25 @@ class DownloadWorker(
             Log.d(TAG, "Executing YoutubeDL for $url -> ${tempFile.absolutePath}")
 
             var lastReported = -1
-            YoutubeDL.getInstance().execute(request) { progress, etaInSeconds, line ->
+            val callback: (Float, Long, String?) -> Unit = { progress, etaInSeconds, _ ->
                 if (isStopped) {
-                    YoutubeDL.getInstance().destroyProcessById(id.toString())
-                    return@execute
-                }
-                val p = progress.toInt().coerceIn(0, 100)
-                if (p != lastReported) {
-                    lastReported = p
-                    Log.v(TAG, "Download progress: $p% (ETA ${etaInSeconds}s)")
+                    try {
+                        YoutubeDL.getInstance().destroyProcessById(id.toString())
+                    } catch (_: Exception) {}
+                } else {
+                    val p = progress.toInt().coerceIn(0, 100)
+                    if (p != lastReported) {
+                        lastReported = p
+                        Log.v(TAG, "Download progress: $p% (ETA ${etaInSeconds}s)")
+                    }
                 }
             }
+
+            YoutubeDL.getInstance().execute(
+                request = request,
+                processId = id.toString(),
+                callback = callback
+            )
 
             // Also search for actual file if extension got changed during merge
             val actualFile = if (tempFile.exists()) {

@@ -8,8 +8,8 @@ import com.snapfetch.app.domain.model.SocialPlatform
 import com.snapfetch.app.domain.model.VideoMetadata
 import com.snapfetch.app.domain.repository.VideoExtractorRepository
 import com.snapfetch.app.utils.YoutubeDLHelper
-import com.yausername.youtubedl.VideoInfo
-import com.yausername.youtubedl.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.mapper.VideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -56,8 +56,8 @@ class VideoExtractorRepositoryImpl(
 
                     val author = info.uploader ?: "Creador"
                     val handle = if (author.startsWith("@")) author else "@$author"
-                    val title = info.title?.takeIf { it.isNotBlank() } ?: "Video de ${platform.displayName}"
-                    val thumbnail = info.thumbnail?.takeIf { it.isNotBlank() } ?: DEFAULT_THUMBNAIL
+                    val title = if (!info.title.isNullOrBlank()) info.title!! else "Video de ${platform.displayName}"
+                    val thumbnail = if (!info.thumbnail.isNullOrBlank()) info.thumbnail!! else DEFAULT_THUMBNAIL
 
                     Log.d(TAG, "✅ Local yt-dlp metadata: '$title' by $handle ($durationFormatted)")
 
