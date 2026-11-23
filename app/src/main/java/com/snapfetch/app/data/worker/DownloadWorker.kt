@@ -9,6 +9,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.snapfetch.app.SnapFetchApplication
+import com.snapfetch.app.data.repository.VideoExtractorRepositoryImpl
 import com.snapfetch.app.domain.model.DownloadQuality
 import com.snapfetch.app.utils.StorageHelper
 import com.snapfetch.app.utils.YoutubeDLHelper
@@ -23,30 +25,37 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 
+/**
+ * DownloadWorker: Resilient background downloader supporting:
+ * - Direct CDN streaming with real-time progress for TikTok & Instagram.
+ * - Local native yt-dlp downloading for Facebook, YouTube Shorts, X/Twitter.
+ * - MediaStore Scoped Storage (/Movies/SnapFetch or /Music/SnapFetch).
+ * - High-priority completion notification upon download finish.
+ */
 class DownloadWorker(
     private val context: Context,
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
-        private const val TAG = "DownloadWorker"
-        const val KEY_STREAM_URL = "arg_stream_url"
-        const val KEY_TITLE = "arg_title"
-        const val KEY_AUTHOR = "arg_author"
-        const val KEY_PLATFORM = "arg_platform"
-        const val KEY_QUALITY_ID = "arg_quality_id"
-        const val KEY_PROGRESS = "progress"
-        const val KEY_RESULT_URI = "result_uri"
+        const val TAG = "DownloadWorker"
+        const val KEY_STREAM_URL = "key_stream_url"
+        const val KEY_TITLE = "key_title"
+        const val KEY_AUTHOR = "key_author"
+        const val KEY_PLATFORM = "key_platform"
+        const val KEY_QUALITY_ID = "key_quality_id"
+        const val KEY_PROGRESS = "key_progress"
+        const val KEY_RESULT_URI = "key_result_uri"
+
+        private val httpClient = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
     }
 
-    private val notificationId =
-        DownloadNotificationManager.NOTIFICATION_ID_BASE + id.hashCode() % 1000
-
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
+    private val notificationId: Int =
+        DownloadNotificationManager.NOTIFICATION_ID_BASE + (id.hashCode() % 1000).let { if (it < 0) -it else it }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val streamUrl = inputData.getString(KEY_STREAM_URL)
@@ -67,7 +76,7 @@ class DownloadWorker(
 
         Log.d(TAG, "Starting download for: $streamUrl (isAudio=$isAudio)")
 
-        // 1. Start foreground service with initial notification
+        // 1. Start foreground service with initial silent notification
         val initialNotification = DownloadNotificationManager.buildProgressNotification(
             context = context,
             notificationId = notificationId,
@@ -93,7 +102,7 @@ class DownloadWorker(
         }
         setForeground(foregroundInfo)
 
-        // 2. Prepare file name & MediaStore target
+        // 2. Prepare MediaStore target
         val sanitizedTitle = title.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_").take(50).trim()
         val fileExtension = if (isAudio) "mp3" else "mp4"
         val mimeType = if (isAudio) "audio/mpeg" else "video/mp4"
@@ -107,7 +116,7 @@ class DownloadWorker(
         ) ?: run {
             DownloadNotificationManager.showFailureNotification(
                 context, notificationId,
-                "No se pudo crear el archivo en MediaStore"
+                "No se pudo crear el archivo en el almacenamiento del dispositivo"
             )
             return@withContext Result.failure()
         }
@@ -116,22 +125,46 @@ class DownloadWorker(
 
         try {
             outputStream = StorageHelper.openOutputStream(context, mediaUri)
-                ?: throw IllegalStateException("No se pudo abrir el stream de salida")
-
-            // Ensure YoutubeDL engine is ready
-            YoutubeDLHelper.init(context)
+                ?: throw IllegalStateException("No se pudo abrir el stream de salida en MediaStore")
 
             var success = false
 
-            // Try local yt-dlp first
-            if (YoutubeDLHelper.isReady()) {
-                success = downloadWithYoutubeDL(streamUrl, outputStream, title, platform, isAudio, fileExtension)
+            // Strategy A: If streamUrl is already a direct CDN media link, download directly via HTTP stream
+            if (isDirectMediaUrl(streamUrl)) {
+                Log.d(TAG, "URL is direct media link. Using high-speed HTTP streamer...")
+                success = downloadHttpStream(streamUrl, outputStream, title, platform, isAudio)
             }
 
-            // Fallback to direct HTTP stream if YoutubeDL did not complete or URL is direct
+            // Strategy B: If URL is TikTok/Instagram and not direct, attempt on-the-fly extraction
             if (!success && !isStopped) {
-                Log.w(TAG, "YoutubeDL did not succeed, trying direct HTTP stream...")
-                success = downloadHttpStream(streamUrl, outputStream, title, platform)
+                val extractor = SnapFetchApplication.instance.videoExtractorRepository as? VideoExtractorRepositoryImpl
+                if (extractor != null) {
+                    val lowerUrl = streamUrl.lowercase()
+                    if (lowerUrl.contains("tiktok.com") || lowerUrl.contains("douyin.com")) {
+                        Log.d(TAG, "Attempting on-the-fly TikTok direct extraction...")
+                        val meta = extractor.extractTikTok(streamUrl)
+                        val directUrl = if (isAudio) meta?.directAudioUrl else meta?.directStreamUrl
+                        if (!directUrl.isNullOrBlank() && directUrl != streamUrl) {
+                            success = downloadHttpStream(directUrl, outputStream, title, platform, isAudio)
+                        }
+                    } else if (lowerUrl.contains("instagram.com") || lowerUrl.contains("instagr.am")) {
+                        Log.d(TAG, "Attempting on-the-fly Instagram direct extraction...")
+                        val meta = extractor.extractInstagram(streamUrl)
+                        val directUrl = meta?.directStreamUrl
+                        if (!directUrl.isNullOrBlank() && directUrl != streamUrl) {
+                            success = downloadHttpStream(directUrl, outputStream, title, platform, isAudio)
+                        }
+                    }
+                }
+            }
+
+            // Strategy C: Local yt-dlp native engine (proven for Facebook, YouTube Shorts, X/Twitter)
+            if (!success && !isStopped) {
+                Log.d(TAG, "Attempting download with local yt-dlp engine...")
+                YoutubeDLHelper.init(context)
+                if (YoutubeDLHelper.isReady()) {
+                    success = downloadWithYoutubeDL(streamUrl, outputStream, title, platform, isAudio, fileExtension)
+                }
             }
 
             if (!success || isStopped) {
@@ -139,17 +172,17 @@ class DownloadWorker(
                 if (!isStopped) {
                     DownloadNotificationManager.showFailureNotification(
                         context, notificationId,
-                        "No se pudo descargar el video. Verifica tu conexión o el enlace."
+                        "No se pudo completar la descarga del video. Verifica tu conexión o el enlace."
                     )
                 }
                 return@withContext Result.failure()
             }
 
-            // Finalize MediaStore entry (marks IS_PENDING = 0)
+            // 3. Finalize MediaStore entry (marks IS_PENDING = 0)
             StorageHelper.finalizeMediaStoreEntry(context, mediaUri)
-            Log.d(TAG, "✅ Download complete: $fileName → $mediaUri")
+            Log.d(TAG, "✅ Download successfully finalized: $fileName → $mediaUri")
 
-            // Completion notification
+            // 4. Show high-priority completion notification (with sound, vibration, heads-up)
             DownloadNotificationManager.showCompletionNotification(
                 context = context,
                 notificationId = notificationId,
@@ -175,6 +208,13 @@ class DownloadWorker(
         }
     }
 
+    private fun isDirectMediaUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains(".mp4") || lower.contains(".mp3") || lower.contains(".m4a") ||
+                lower.contains("tiktokcdn") || lower.contains("fbcdn.net") ||
+                lower.contains("cdninstagram.com") || lower.contains("googlevideo.com")
+    }
+
     private suspend fun downloadWithYoutubeDL(
         url: String,
         outputStream: OutputStream,
@@ -190,6 +230,8 @@ class DownloadWorker(
             val request = YoutubeDLRequest(url).apply {
                 addOption("-o", tempFile.absolutePath)
                 addOption("--no-mtime")
+                addOption("--no-playlist")
+                addOption("--add-header", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 if (isAudio) {
                     addOption("-x")
                     addOption("--audio-format", "mp3")
@@ -211,7 +253,7 @@ class DownloadWorker(
                     val p = progress.toInt().coerceIn(0, 100)
                     if (p != lastReported) {
                         lastReported = p
-                        Log.v(TAG, "Download progress: $p% (ETA ${etaInSeconds}s)")
+                        Log.v(TAG, "yt-dlp progress: $p% (ETA ${etaInSeconds}s)")
                     }
                 }
             }
@@ -222,7 +264,7 @@ class DownloadWorker(
                 callback = callback
             )
 
-            // Also search for actual file if extension got changed during merge
+            // Locate downloaded file (extension may change during merge)
             val actualFile = if (tempFile.exists()) {
                 tempFile
             } else {
@@ -252,7 +294,8 @@ class DownloadWorker(
         url: String,
         outputStream: OutputStream,
         title: String,
-        platform: String
+        platform: String,
+        isAudio: Boolean
     ): Boolean {
         return try {
             val request = Request.Builder()
@@ -263,12 +306,23 @@ class DownloadWorker(
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return false
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "HTTP stream failed with code ${response.code}")
+                    return false
+                }
                 val body = response.body ?: return false
+
+                // Safeguard: Do NOT download HTML or plain text as media!
+                val contentType = response.header("Content-Type")?.lowercase().orEmpty()
+                if (contentType.startsWith("text/") || contentType.contains("html") || contentType.contains("json")) {
+                    Log.e(TAG, "Content-Type is not a media stream: $contentType. Aborting.")
+                    return false
+                }
+
                 val totalBytes = body.contentLength()
                 val inputStream: InputStream = body.byteStream()
 
-                val buffer = ByteArray(16 * 1024)
+                val buffer = ByteArray(32 * 1024)
                 var bytesCopied: Long = 0
                 var lastProgress = -1
 
@@ -281,7 +335,7 @@ class DownloadWorker(
 
                     if (totalBytes > 0) {
                         val progress = ((bytesCopied * 100) / totalBytes).toInt().coerceAtMost(100)
-                        if (progress != lastProgress && (progress - lastProgress >= 2 || progress == 100)) {
+                        if (progress != lastProgress && (progress - lastProgress >= 3 || progress == 100)) {
                             lastProgress = progress
                             updateForegroundProgress(progress, title, platform)
                         }
@@ -289,10 +343,17 @@ class DownloadWorker(
                     bytes = inputStream.read(buffer)
                 }
 
-                bytesCopied >= 1024
+                // Minimum size check: Valid video must be at least 50KB, audio at least 20KB
+                val minBytes = if (isAudio) 20 * 1024L else 50 * 1024L
+                if (bytesCopied < minBytes) {
+                    Log.e(TAG, "Downloaded file too small ($bytesCopied bytes), failing.")
+                    false
+                } else {
+                    true
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "HTTP stream fallback error", e)
+            Log.e(TAG, "HTTP stream error", e)
             false
         }
     }
